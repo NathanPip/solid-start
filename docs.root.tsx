@@ -1,5 +1,7 @@
 // @refresh reload
-import { createMemo, For, Show, Suspense } from "solid-js";
+import { createEffect, createMemo, For, Show, Suspense, useContext } from "solid-js";
+import { createStore } from "solid-js/store";
+import { isServer } from "solid-js/web";
 import { MDXProvider } from "solid-mdx";
 import {
   Body,
@@ -8,15 +10,17 @@ import {
   Html,
   Link,
   Meta,
+  parseCookie,
   Routes,
   Scripts,
+  ServerContext,
   Stylesheet,
   Title,
   unstable_island
 } from "solid-start";
 import { ErrorBoundary } from "solid-start/error-boundary";
+import { ColorModeButton } from "./components/ColorModeButton";
 import "./components/index.css";
-
 const IslandA = unstable_island(() => import("./components/A"));
 const TableOfContents = unstable_island(() => import("./components/TableOfContents"));
 
@@ -85,6 +89,7 @@ function SocialIcon(props) {
 }
 
 function Header() {
+
   return (
     <header class="flex px-8 py-2 shadow-md z-10 md:z-50 relative col-span-3 col-start-1 row-start-1">
       <div class="flex justify-between w-full">
@@ -114,9 +119,11 @@ function Header() {
               </svg>
             </a>
           </div>
+          <ColorModeButton />
           <ul class="flex">
             <For each={socials} children={social => <SocialIcon {...social} />} />
           </ul>
+
         </div>
       </div>
     </header>
@@ -196,7 +203,7 @@ function Nav() {
                       <ul class="ml-2 mt-4">
                         <div class="font-bold text-gray-500 text-md mb-3">{s}</div>
                         <For each={r.filter(i => i.subsection === s)}>
-                          {({ title, path, href, frontMatter }) => (
+                          {({ title, path, href, frontmatter }) => (
                             <li class="ml-2">
                               <IslandA
                                 activeClass="text-primary"
@@ -250,11 +257,55 @@ function Nav() {
 }
 
 import { components } from "./components/components";
+import { Config, ConfigContext } from "./components/ConfigContext";
 import { useTableOfContents } from "./components/TableOfContents";
 
+// get cookies
+function useCookies() {
+  const context = useContext(ServerContext);
+  const cookies = isServer
+    ? context.request.headers.get("Cookie")
+    : document.cookie;
+
+  return parseCookie(cookies ?? "");
+}
+
+// return the config from cookies
+function useCookieConfig(): Config {
+  const cookies = useCookies();
+  return cookies?.["docs_config"]
+    ? JSON.parse(cookies["docs_config"])
+    : {colorMode: "none"};
+}
+
 export default function Root() {
+  // create config store from cookie config
+  const [config, setConfig] = createStore<Config>(useCookieConfig());
+
+  // update cookies and html class name when config changes
+  createEffect(() => {
+    // update cookies
+    const serialized = JSON.stringify(config);
+    document.cookie = `docs_config=${serialized}; SameSite=Lax; Secure; max-age=${60 * 60 * 24 * 365}; path=/`;
+
+    // toggle color mode
+    if (config.colorMode !== "none") {
+      document.documentElement.classList.remove(
+        config.colorMode === "light" ? "dark" : "light"
+      );
+      document.documentElement.classList.add(config.colorMode);
+    } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      setConfig("colorMode", "dark");
+      document.documentElement.classList.add("dark");
+    } else {
+      setConfig("colorMode", "light");
+      document.documentElement.classList.add("light");
+    }
+
+  });
+
   return (
-    <Html lang="en" class="h-full">
+    <Html lang="en" class={`h-full ${config.colorMode}`}>
       <Title>SolidStart (Beta)</Title>
       <Head>
         <Meta charset="utf-8" />
@@ -281,82 +332,87 @@ export default function Root() {
       </Head>
 
       <Body class="h-full grid grid-cols-[auto,1fr,auto] grid-rows-[auto,1fr]">
-        <Header />
+        <ConfigContext.Provider value={[config, setConfig]}>
+          <Header />
 
-        <input type="checkbox" class="peer hidden" name="sidebar-toggle" id="sidebar-toggle" />
+          <input type="checkbox" class="peer hidden" name="sidebar-toggle" id="sidebar-toggle" />
 
-        <label
-          class="fixed cursor-pointer peer-checked:rotate-90 md:hidden top-20 right-3 text-white rounded-lg transition duration-500 bg-solid-medium reveal-delay opacity-0"
-          for="sidebar-toggle"
-        >
-          <svg class="h-7 w-7" viewBox="0 0 24 24" style="fill: none; stroke: currentcolor;">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"></path>
-          </svg>
-        </label>
+          <label
+            class="fixed cursor-pointer peer-checked:rotate-90 md:hidden top-20 right-3 text-white rounded-lg transition duration-500 bg-solid-medium reveal-delay opacity-0"
+            for="sidebar-toggle"
+          >
+            <svg class="h-7 w-7" viewBox="0 0 24 24" style="fill: none; stroke: currentcolor;">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"></path>
+            </svg>
+          </label>
 
-        <Nav />
+          <Nav />
 
-        <div class="col-start-2 row-start-2 h-full overflow-auto">
-          <div class="px-8 py-8 h-full container">
-            <ErrorBoundary>
-              <Suspense>
-                <main class="prose prose-md max-w-none w-full pt-0 pb-10 lg:px-10">
-                  <MDXProvider
-                    components={{
-                      ...components,
-                      "table-of-contents": () => {
-                        const headings = useTableOfContents();
-                        return (
-                          <>
-                            <div class="xl:hidden space-y-4 overflow-hidden">
-                              <ul class="space-y-2 text-[1rem]">
-                                <Suspense>
-                                  <For each={headings()}>
-                                    {h => (
-                                      <li
-                                        classList={{
-                                          "ml-2": h.depth === 2,
-                                          "ml-4": h.depth === 3
-                                        }}
-                                      >
-                                        <IslandA class="border-0 no-underline" href={`#${h.slug}`}>
-                                          {h.text}
-                                        </IslandA>
-                                      </li>
-                                    )}
-                                  </For>
-                                </Suspense>
-                              </ul>
-                            </div>
-                            <hr class="xl:hidden" />
-                          </>
-                        );
-                      }
-                    }}
-                  >
-                    <Routes>
-                      <FileRoutes />
-                    </Routes>
-                  </MDXProvider>
-                </main>
-              </Suspense>
-            </ErrorBoundary>
+          <div class="col-start-2 row-start-2 h-full overflow-auto">
+            <div class="px-8 py-8 h-full container">
+              <ErrorBoundary>
+                <Suspense>
+                  <main class="prose prose-md max-w-none w-full pt-0 pb-10 lg:px-10">
+                    <MDXProvider
+                      components={{
+                        ...components,
+                        "table-of-contents": () => {
+                          const headings = useTableOfContents();
+                          return (
+                            <>
+                              <div class="xl:hidden space-y-4 overflow-hidden">
+                                <ul class="space-y-2 text-[1rem]">
+                                  <Suspense>
+                                    <For each={headings()}>
+                                      {h => (
+                                        <li
+                                          classList={{
+                                            "ml-2": h.depth === 2,
+                                            "ml-4": h.depth === 3
+                                          }}
+                                        >
+                                          <IslandA
+                                            class="border-0 no-underline"
+                                            href={`#${h.slug}`}
+                                          >
+                                            {h.text}
+                                          </IslandA>
+                                        </li>
+                                      )}
+                                    </For>
+                                  </Suspense>
+                                </ul>
+                              </div>
+                              <hr class="xl:hidden" />
+                            </>
+                          );
+                        }
+                      }}
+                    >
+                      <Routes>
+                        <FileRoutes />
+                      </Routes>
+                    </MDXProvider>
+                  </main>
+                </Suspense>
+              </ErrorBoundary>
+            </div>
           </div>
-        </div>
 
-        <TableOfContents />
+          <TableOfContents />
 
-        <script src="https://cdn.jsdelivr.net/npm/@docsearch/js@3"></script>
-        <script>
-          {`docsearch({
+          <script src="https://cdn.jsdelivr.net/npm/@docsearch/js@3"></script>
+          <script>
+            {`docsearch({
             appId: "VTVVKZ36GX",
             apiKey: "f520312c8dccf1309453764ee2fed27e",
             indexName: "solidjs",
             container: "#docsearch",
             debug: false 
           });`}
-        </script>
-        <Scripts />
+          </script>
+          <Scripts />
+        </ConfigContext.Provider>
       </Body>
     </Html>
   );
